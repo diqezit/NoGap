@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.37012.4 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NoGap", "NoGap.csproj", "{F2EBAF77-1353-44F0-8BB8-D087C05702F3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F2EBAF77-1353-44F0-8BB8-D087C05702F3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F2EBAF77-1353-44F0-8BB8-D087C05702F3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F2EBAF77-1353-44F0-8BB8-D087C05702F3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F2EBAF77-1353-44F0-8BB8-D087C05702F3}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {13592332-34F9-4767-A01D-0FE198D27AF5}
+	EndGlobalSection
+EndGlobal
