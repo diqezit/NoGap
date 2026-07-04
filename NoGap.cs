@@ -1,109 +1,105 @@
 ﻿using HarmonyLib;
-using Platform;
 using System;
 using System.Collections.Generic;
+using UnityEngine;
 
 /*
  NoGap
 
  Vanilla terrain uses marching cubes and a per cell density sbyte value.
- Placing a normal building block next to terrain can leave that cell's density
- in a state where the terrain mesh visually pulls away from the block,
- showing a gap. A known manual fix closes this by editing only the density
- value of that one cell, without touching the block itself.
+ Placing a normal building block next to terrain can leave that cell's
+ density in a state where the terrain mesh visually pulls away from the
+ block, showing a gap. A known manual fix closes this by editing only the
+ density value of that one cell, without touching the block itself.
 
  Goal
+ -----
  - Close the visual gap for blocks placed directly on or into terrain
- - Never touch blocks that are stacked in the air on top of other blocks
+ - Never touch blocks stacked in the air on top of other blocks
  - Never place, remove or replace any block - density only
- - Never apply the fix to blocks that carry a special BlockTag
-   (doors, closet doors, windows, growable plants, tree trunks, gore,
-   spikes) since these block types may render or behave oddly if their
-   surrounding density is altered, and to trapdoors specifically since
-   they may not carry a distinguishing tag
+ - Skip blocks whose visuals or behavior could break if density around
+   them changes: doors, windows, growable plants, tree trunks, gore,
+   spikes, trapdoors, ladders, bars, catwalks, railings, farm plots
+ - Let the player manually exempt any block type at runtime, for cases
+   the built in filters do not cover (modded blocks, edge cases)
 
- ----------------------------------------------------------------------------
- What the mod does in order
+ Why patch ChangeBlocks
+ ----------------------
+ GameManager.ChangeBlocks is the single point every block change passes
+ through - placement, explosions, scripts - so patching it here catches
+ every real placement without needing separate hooks per source.
 
- 1) Patch ChangeBlocks
-
- Harmony Postfix on GameManager.ChangeBlocks, server only. This is the single
- point every block change passes through (placement, explosions, scripts),
- so it catches every real placement without needing separate hooks per source.
-
- 2) Filter to real player placements
-
- For each entry in the batch:
- - bChangeBlockValue must be true (skip pure damage/texture updates)
- - blockValue.isair skipped (removals need no fix)
- - blockValue.ischild skipped (multiblock parts, parent already handles it)
- - changedByEntityId must resolve to an EntityPlayer (skip scripts, explosions)
- - blockValue.isTerrain must be false (only non terrain blocks get the fix)
- - the placed block's Block.BlockTag must be BlockTags.None - any tagged
-   block (Door, ClosetDoor, Window, GrowablePlant, TreeTrunk, Gore, Spike)
-   is skipped entirely. Confirmed against the shipped blocks.xml that every
-   door variant (chainlinkFenceDoor, oldWoodDoor, oldWoodDoorDouble,
-   ironDoor, vaultDoor, jailDoor, frenchDoor, cellarDoor, closetDoor,
-   tallCabinetDoor, houseSlidingDoor, exteriorHouseDoor, interiorHouseDoor,
-   interiorDoorOld, bathroomStallDoor, exteriorScreenDoor and all their
-   color and double variants) sets BlockTag="Door", so the single
-   BlockTag != None check reliably excludes every door in the game
- - BlockTrapDoor is explicitly skipped as well by type, since it may not
-   carry a distinguishing BlockTag in this game version
-
- 3) Confirm the block actually sits on terrain
-
- Scans straight down from the placed position, one cell at a time, up to
- ScanDown cells. The first non air cell found decides the outcome:
- - if it's terrain, the fix applies
- - if it's a normal block, scanning stops and the fix is skipped
-
- This is what stops the mod from reaching upward into stacked builds - only
- blocks resting on or embedded in the actual terrain surface qualify.
-
- 4) Apply the density fix
-
- Reads the cell's current density through WorldBase.GetDensity. If it is
- already ConnectDensity nothing is sent. Otherwise a density only
- BlockChangeInfo is built for that same cell and queued.
-
- ConnectDensity is -120, matching the value the manual "/" gap fix uses.
- It sits between DensityAir and DensityTerrain, so it seals the mesh without
- growing visible terrain mass. bForceDensityChange is set to true because
- ChangeBlocks otherwise clamps density on non terrain blocks and the change
- would be silently dropped.
-
- 5) Send as one batch
-
- All queued density changes are sent together through GameManager.SetBlocksRPC,
- attributed to the same persistentPlayerId that triggered the original change.
-
- ----------------------------------------------------------------------------
  Why a ThreadStatic guard is required
+ -------------------------------------
+ SetBlocksRPC calls ChangeBlocks internally to apply the change on the
+ server, which fires this same Postfix again. Without a guard the mod
+ would try to fix its own density write, loop back into SetBlocksRPC,
+ and repeat forever. The guard is set before SetBlocksRPC is called and
+ cleared right after, so the re entrant call sees it set and returns.
 
- SetBlocksRPC calls ChangeBlocks internally to apply the change on the server,
- which fires this same Postfix again. Without a guard the mod would try to
- fix its own density write, loop back into SetBlocksRPC, and repeat.
- The guard is set before SetBlocksRPC is called and cleared right after,
- so the re entrant call sees it set and returns immediately.
+ Why most block type filters have no shared BlockTag
+ ------------------------------------------------------
+ Doors, windows, growable plants, tree trunks, gore and spikes all set
+ Block.BlockTag in blocks.xml, so a single BlockTag != None check
+ excludes all of them. Trapdoors, ladders, bars, catwalks and railings
+ do not carry a distinguishing BlockTag, so each is excluded by a
+ different signal instead: C# type, the "Class" property, block name
+ prefix, or FilterTags - whichever uniquely identifies that family.
 
- ----------------------------------------------------------------------------
- Important
- - Runs only when SingletonMonoBehaviour<ConnectionManager>.Instance.IsServer
-   is true. Clients never evaluate this logic, changes always arrive via RPC.
- - A HashSet<Vector3i> dedupes positions within one ChangeBlocks call, since
-   a single batch can reference the same cell more than once.
- - Tag based exclusion uses Block.BlockTag (single enum value per block, not
-   a flag set) read from ILSpy against the shipped Assembly-CSharp. Any
-   block with a tag other than BlockTags.None is excluded from the fix.
- - Cross checked against blocks.xml: every door family sets BlockTag="Door",
-   confirming the BlockTag != None check alone is sufficient to exclude all
-   doors. No per-class or per-name matching is needed.
- - BlockTrapDoor does not set a BlockTag in blocks.xml, so it is excluded
-   explicitly by its C# type to be safe.
+ Why the manual toggle uses HitInfo.hit.blockValue
+ -------------------------------------------------
+ When a player holds a block and aims at the ground, HitInfo.lastBlockPos
+ often points to the air space above the ground where the new block would
+ be placed. HitInfo.hit.blockValue reliably holds the actual block
+ currently highlighted by the crosshair, so we use it to ensure we toggle
+ the intended block type.
 
- ----------------------------------------------------------------------------
+ What the mod does in order
+ ---------------------------
+ 1 Filter to real player placements
+   bChangeBlockValue must be true, blockValue must not be air or a
+   multiblock child, changedByEntityId must resolve to an EntityPlayer,
+   and blockValue.isTerrain must be false - only non terrain blocks
+   placed by a player are candidates.
+
+ 2 Skip excluded block types
+   Manual toggle set, BlockTag, BlockTrapDoor, ladders, bars, catwalks,
+   railings, windows and farm plots / fertile soil are all skipped here,
+   see the filter rationale above.
+
+ 3 Confirm the block actually sits on terrain
+   Scans straight down from the placed position up to ScanDistance
+   cells. The first non air cell found decides the outcome: terrain
+   applies the fix, a normal block stops the scan and skips the fix.
+   This is what keeps blocks stacked in the air untouched.
+
+ 4 Apply the density fix
+   Reads the cell's current density through WorldBase.GetDensity. If it
+   already equals ConnectDensity nothing is queued. Otherwise a density
+   only BlockChangeInfo is built for that cell. ConnectDensity is -120,
+   matching the value the manual "/" gap fix uses - it sits between
+   DensityAir and DensityTerrain, sealing the mesh without adding
+   visible terrain mass. bForceDensityChange is required because
+   ChangeBlocks otherwise clamps density on non terrain blocks and
+   drops the change silently.
+
+ 5 Send as one batch
+   All queued density changes are sent together through
+   GameManager.SetBlocksRPC, attributed to the same persistentPlayerId
+   that triggered the original change.
+
+ Notes
+ -----
+ - Runs only when ConnectionManager.IsServer is true - clients never
+   evaluate this logic, changes always arrive via RPC.
+ - A HashSet<Vector3i> dedupes positions within one ChangeBlocks call,
+   since a single batch can reference the same cell more than once.
+ - _blocksToChange and GameManager.World are not null checked: Harmony
+   postfixes only run after the original method returns without
+   throwing, and ChangeBlocks itself depends on both being valid.
+
  Integration points (for future migration)
+ -------------------------------------------
  GameManager.ChangeBlocks
  GameManager.SetBlocksRPC
  WorldBase.GetDensity(Vector3i)
@@ -111,11 +107,16 @@ using System.Collections.Generic;
  World.GetEntity(int)
  BlockChangeInfo(BlockValueRef, sbyte, bool)
  BlockValueRef.TryGetBlockPos
- BlockValue.isTerrain
+ BlockValue.isTerrain / isair / ischild
  BlockValue.Block
  Block.BlockTag / BlockTags enum
+ Block.Properties / DynamicProperties.GetString
+ Block.GetBlockName()
+ Block.FilterTags
+ Block.blockMaterial / MaterialBlock.FertileLevel
  BlockTrapDoor
  ConnectionManager.IsServer
+ EntityPlayerLocal.HitInfo
 */
 
 public sealed class NoGap : IModApi
@@ -134,8 +135,21 @@ public static class Patch_NoGap
     [ThreadStatic]
     private static bool guard;
 
-    private const int ScanDown = 6;
+    private const int ScanDistance = 6;
     private const sbyte ConnectDensity = -120;
+    private const int FertileLevelThreshold = 16;
+    private const string WindowFilterTag = "SC_windows";
+
+    internal static readonly HashSet<string> DisabledBlocks = new HashSet<string>();
+
+    private static readonly string[] SkippedBlockPrefixes =
+    {
+        "ironBars",
+        "jailBars",
+        "metalCatwalk",
+        "metalRailing",
+        "metalStairsBoardRailing"
+    };
 
     private static void Postfix(
         GameManager __instance,
@@ -145,15 +159,10 @@ public static class Patch_NoGap
         if (guard)
             return;
 
-        if (_blocksToChange == null)
-            return;
-
         if (!SingletonMonoBehaviour<ConnectionManager>.Instance.IsServer)
             return;
 
         World world = __instance.World;
-        if (world == null)
-            return;
 
         guard = true;
         try
@@ -175,11 +184,11 @@ public static class Patch_NoGap
                 if (world.GetDensity(pos) == ConnectDensity)
                     continue;
 
-                BlockChangeInfo dens = new BlockChangeInfo(new BlockValueRef(pos), ConnectDensity, true)
-                {
-                    changedByEntityId = entityId
-                };
-                densityChanges.Add(dens);
+                densityChanges.Add(
+                    new BlockChangeInfo(new BlockValueRef(pos), ConnectDensity, true)
+                    {
+                        changedByEntityId = entityId
+                    });
             }
 
             if (densityChanges.Count > 0)
@@ -204,52 +213,44 @@ public static class Patch_NoGap
         pos = Vector3i.zero;
         entityId = -1;
 
-        if (ch == null)
-            return false;
-
-        if (!ch.bChangeBlockValue)
-            return false;
-
-        if (ch.blockValue.isair)
-            return false;
-
-        if (ch.blockValue.ischild)
+        if (ch == null
+            || !ch.bChangeBlockValue
+            || ch.blockValue.isair
+            || ch.blockValue.ischild)
             return false;
 
         entityId = ch.changedByEntityId;
-        if (entityId <= 0)
-            return false;
 
-        if (!ch.blockValueRef.TryGetBlockPos(out pos))
-            return false;
-
-        if (!(world.GetEntity(entityId) is EntityPlayer))
+        if (entityId <= 0
+            || !ch.blockValueRef.TryGetBlockPos(out pos)
+            || !(world.GetEntity(entityId) is EntityPlayer))
             return false;
 
         if (ch.blockValue.isTerrain)
             return false;
 
         Block placedBlock = ch.blockValue.Block;
-        if (placedBlock != null && ShouldSkipBlock(placedBlock))
-            return false;
-
-        return true;
+        return placedBlock == null || !ShouldSkipBlock(placedBlock);
     }
 
     private static bool ShouldSkipBlock(Block block)
     {
-        if (block.BlockTag != BlockTags.None)
-            return true;
+        string blockName = block.GetBlockName();
 
-        if (block is BlockTrapDoor)
-            return true;
-
-        return false;
+        return DisabledBlocks.Contains(blockName)
+            || block.BlockTag != BlockTags.None
+            || block is BlockTrapDoor
+            || block.Properties.GetString("Class") == "Ladder"
+            || Array.Exists(SkippedBlockPrefixes, blockName.StartsWith)
+            || (block.FilterTags != null
+                && Array.IndexOf(block.FilterTags, WindowFilterTag) >= 0)
+            || (block.blockMaterial != null
+                && block.blockMaterial.FertileLevel >= FertileLevelThreshold);
     }
 
     private static bool HasTerrainBelow(World world, Vector3i pos)
     {
-        for (int d = 1; d <= ScanDown; d++)
+        for (int d = 1; d <= ScanDistance; d++)
         {
             int y = pos.y - d;
             if (y < 1)
@@ -264,5 +265,33 @@ public static class Patch_NoGap
         }
 
         return false;
+    }
+}
+
+[HarmonyPatch(typeof(EntityPlayerLocal), nameof(EntityPlayerLocal.Update))]
+public static class Patch_NoGap_Input
+{
+    private static void Postfix(EntityPlayerLocal __instance)
+    {
+        if (!Input.GetKeyDown(KeyCode.RightBracket)
+            || __instance.HitInfo == null
+            || !__instance.HitInfo.bHitValid)
+            return;
+
+        BlockValue bv = __instance.HitInfo.hit.blockValue;
+        if (bv.isair || bv.Block == null)
+            return;
+
+        string blockName = bv.Block.GetBlockName();
+
+        if (!Patch_NoGap.DisabledBlocks.Add(blockName))
+        {
+            Patch_NoGap.DisabledBlocks.Remove(blockName);
+            GameManager.ShowTooltip(__instance, "NoGap: ENABLED for " + blockName);
+        }
+        else
+        {
+            GameManager.ShowTooltip(__instance, "NoGap: DISABLED for " + blockName);
+        }
     }
 }
