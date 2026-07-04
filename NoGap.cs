@@ -244,6 +244,11 @@ public static class Patch_NoGap
         if (block is BlockTrapDoor)
             return true;
 
+        // v1.1 - Skip farm plot / fertile soil blocks (prevents terrain texture artifacts on their sides)
+        MaterialBlock mat = block.blockMaterial;
+        if (mat != null && mat.FertileLevel >= 16)
+            return true;
+
         return false;
     }
 
