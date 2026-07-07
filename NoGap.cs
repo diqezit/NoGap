@@ -13,79 +13,78 @@ using System.Collections.Generic;
  value of that one cell, without touching the block itself.
 
  Goal
+ -----
  - Close the visual gap for blocks placed directly on or into terrain
  - Never touch blocks that are stacked in the air on top of other blocks
  - Never place, remove or replace any block - density only
  - Never apply the fix to blocks that carry a special BlockTag
    (doors, closet doors, windows, growable plants, tree trunks, gore,
    spikes) since these block types may render or behave oddly if their
-   surrounding density is altered, and to trapdoors specifically since
-   they may not carry a distinguishing tag
+   surrounding density is altered, and to trapdoors, ladders, bars,
+   catwalks and railings specifically since they do not carry a
+   distinguishing BlockTag
 
  ----------------------------------------------------------------------------
  What the mod does in order
 
  1) Patch ChangeBlocks
-
- Harmony Postfix on GameManager.ChangeBlocks, server only. This is the single
- point every block change passes through (placement, explosions, scripts),
- so it catches every real placement without needing separate hooks per source.
+   Harmony Postfix on GameManager.ChangeBlocks, server only. This is the
+   single point every block change passes through (placement, explosions,
+   scripts), so it catches every real placement without needing separate
+   hooks per source.
 
  2) Filter to real player placements
-
- For each entry in the batch:
- - bChangeBlockValue must be true (skip pure damage/texture updates)
- - blockValue.isair skipped (removals need no fix)
- - blockValue.ischild skipped (multiblock parts, parent already handles it)
- - changedByEntityId must resolve to an EntityPlayer (skip scripts, explosions)
- - blockValue.isTerrain must be false (only non terrain blocks get the fix)
- - the placed block's Block.BlockTag must be BlockTags.None - any tagged
-   block (Door, ClosetDoor, Window, GrowablePlant, TreeTrunk, Gore, Spike)
-   is skipped entirely. Confirmed against the shipped blocks.xml that every
-   door variant (chainlinkFenceDoor, oldWoodDoor, oldWoodDoorDouble,
-   ironDoor, vaultDoor, jailDoor, frenchDoor, cellarDoor, closetDoor,
-   tallCabinetDoor, houseSlidingDoor, exteriorHouseDoor, interiorHouseDoor,
-   interiorDoorOld, bathroomStallDoor, exteriorScreenDoor and all their
-   color and double variants) sets BlockTag="Door", so the single
-   BlockTag != None check reliably excludes every door in the game
- - BlockTrapDoor is explicitly skipped as well by type, since it may not
-   carry a distinguishing BlockTag in this game version
+   For each entry in the batch:
+   - bChangeBlockValue must be true (skip pure damage/texture updates)
+   - blockValue.isair skipped (removals need no fix)
+   - blockValue.ischild skipped (multiblock parts, parent already handles it)
+   - changedByEntityId must resolve to an EntityPlayer (skip scripts, explosions)
+   - blockValue.isTerrain must be false (only non terrain blocks get the fix)
+   - Block.BlockTag must be BlockTags.None - any tagged block (Door, ClosetDoor,
+     Window, GrowablePlant, TreeTrunk, Gore, Spike) is skipped entirely
+     Confirmed against the shipped blocks.xml that every door variant sets
+     BlockTag="Door", so the single BlockTag != None check reliably excludes
+     every door in the game
+   - BlockTrapDoor is skipped by C# type, as it lacks a BlockTag
+   - v1.2 Ladders are skipped by checking the "Class" property for "Ladder",
+     covering all vanilla and modded ladders without hardcoding names
+   - v1.2 Iron and Jail Bars, Catwalks and Railings are skipped by block name
+     prefix, covering all color and shape variants without hardcoding every
+     single block name
+   - v1.2 Windows are skipped by checking the FilterTags array for "SC_windows"
+   - v1.1 Farm plot and fertile soil blocks are skipped by
+     blockMaterial.FertileLevel to prevent terrain texture artifacts on
+     their sides
 
  3) Confirm the block actually sits on terrain
-
- Scans straight down from the placed position, one cell at a time, up to
- ScanDown cells. The first non air cell found decides the outcome:
- - if it's terrain, the fix applies
- - if it's a normal block, scanning stops and the fix is skipped
-
- This is what stops the mod from reaching upward into stacked builds - only
- blocks resting on or embedded in the actual terrain surface qualify.
+   Scans straight down from the placed position one cell at a time up to
+   ScanDown cells. The first non air cell found decides the outcome:
+   - if it's terrain, the fix applies
+   - if it's a normal block, scanning stops and the fix is skipped
+   This stops the mod from touching blocks stacked in the air on top of other
+   blocks, only blocks resting on or embedded in the terrain qualify.
 
  4) Apply the density fix
-
- Reads the cell's current density through WorldBase.GetDensity. If it is
- already ConnectDensity nothing is sent. Otherwise a density only
- BlockChangeInfo is built for that same cell and queued.
-
- ConnectDensity is -120, matching the value the manual "/" gap fix uses.
- It sits between DensityAir and DensityTerrain, so it seals the mesh without
- growing visible terrain mass. bForceDensityChange is set to true because
- ChangeBlocks otherwise clamps density on non terrain blocks and the change
- would be silently dropped.
+   Reads the cell's current density through WorldBase.GetDensity. If it is
+   already ConnectDensity nothing is sent. Otherwise a density only
+   BlockChangeInfo is built for that same cell and queued.
+   ConnectDensity is -120, matching the value the manual "/" gap fix uses.
+   It sits between DensityAir and DensityTerrain, so it seals the mesh without
+   growing visible terrain mass. bForceDensityChange is set to true because
+   ChangeBlocks otherwise clamps density on non terrain blocks and the change
+   would be silently dropped.
 
  5) Send as one batch
-
- All queued density changes are sent together through GameManager.SetBlocksRPC,
- attributed to the same persistentPlayerId that triggered the original change.
+   All queued density changes are sent together through GameManager.SetBlocksRPC,
+   attributed to the same persistentPlayerId that triggered the original change.
 
  ----------------------------------------------------------------------------
  Why a ThreadStatic guard is required
-
- SetBlocksRPC calls ChangeBlocks internally to apply the change on the server,
- which fires this same Postfix again. Without a guard the mod would try to
- fix its own density write, loop back into SetBlocksRPC, and repeat.
- The guard is set before SetBlocksRPC is called and cleared right after,
- so the re entrant call sees it set and returns immediately.
+   SetBlocksRPC calls ChangeBlocks internally to apply the change on the server,
+   which fires this same Postfix again. Without a guard the mod would try to
+   fix its own density write, loop back into SetBlocksRPC, and repeat.
+   The guard is set before SetBlocksRPC is called and cleared right after,
+   so the re entrant call sees it set and returns immediately.
 
  ----------------------------------------------------------------------------
  Important
@@ -99,8 +98,11 @@ using System.Collections.Generic;
  - Cross checked against blocks.xml: every door family sets BlockTag="Door",
    confirming the BlockTag != None check alone is sufficient to exclude all
    doors. No per-class or per-name matching is needed.
- - BlockTrapDoor does not set a BlockTag in blocks.xml, so it is excluded
-   explicitly by its C# type to be safe.
+ - BlockTrapDoor, Ladders, Bars, Catwalks, Railings, and Windows lack a
+   unifying BlockTag, so they are excluded by C# type, Properties "Class",
+   block name prefix, and FilterTags array respectively.
+ - Farm plot / fertile soil blocks are excluded via MaterialBlock.FertileLevel
+   to prevent terrain texture artifacts on their sides.
 
  ----------------------------------------------------------------------------
  Integration points (for future migration)
@@ -114,6 +116,10 @@ using System.Collections.Generic;
  BlockValue.isTerrain
  BlockValue.Block
  Block.BlockTag / BlockTags enum
+ Block.Properties / DynamicProperties.GetString
+ Block.GetBlockName()
+ Block.FilterTags
+ Block.blockMaterial / MaterialBlock.FertileLevel
  BlockTrapDoor
  ConnectionManager.IsServer
 */
@@ -136,6 +142,17 @@ public static class Patch_NoGap
 
     private const int ScanDown = 6;
     private const sbyte ConnectDensity = -120;
+    private const int FertileLevelThreshold = 16;
+    private const string WindowFilterTag = "SC_windows";
+
+    private static readonly string[] SkippedBlockPrefixes =
+    {
+        "ironBars",
+        "jailBars",
+        "metalCatwalk",
+        "metalRailing",
+        "metalStairsBoardRailing"
+    };
 
     private static void Postfix(
         GameManager __instance,
@@ -244,9 +261,23 @@ public static class Patch_NoGap
         if (block is BlockTrapDoor)
             return true;
 
+        // v1.2
+        if (block.Properties.GetString("Class") == "Ladder")
+            return true;
+
+        // v1.2
+        string blockName = block.GetBlockName();
+        if (Array.Exists(SkippedBlockPrefixes, p => blockName.StartsWith(p)))
+            return true;
+
+        // v1.2
+        string[] filterTags = block.FilterTags;
+        if (filterTags != null && Array.IndexOf(filterTags, WindowFilterTag) >= 0)
+            return true;
+
         // v1.1 - Skip farm plot / fertile soil blocks (prevents terrain texture artifacts on their sides)
         MaterialBlock mat = block.blockMaterial;
-        if (mat != null && mat.FertileLevel >= 16)
+        if (mat != null && mat.FertileLevel >= FertileLevelThreshold)
             return true;
 
         return false;
