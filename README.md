@@ -20,13 +20,17 @@ Doesn't touch
 
 - blocks stacked on blocks
 - doors windows plants trees gore spikes tagged blocks
-- trapdoors no tag in this version excluded manually
+- trapdoors ladders bars catwalks railings windows farm plots no shared tag so excluded manually by type name or property
 - terrain blocks
 - block data itself ever density only
 
+## Manual toggle
+
+Look at any placed block and press ']' The block's type is added to a runtime exclusion list so the fix stops applying to every block of that type Press ']' again on the same type to re enable it Useful for modded or edge case blocks the built in filters don't catch No UI feedback the next placement of that block type shows the result directly The list is not saved and resets on restart
+
 ## Server side only
 
-Runs only if ConnectionManager.IsServer is true Clients get the result over RPC same as any other block change don't need to install it but doesn't hurt to
+Runs only if ConnectionManager.IsServer is true Clients get the result over RPC same as any other block change don't need to install it but doesn't hurt to The manual toggle above is client side input only it filters what gets sent from that machine
 
 Has a reentrancy guard because applying the fix calls SetBlocksRPC which calls ChangeBlocks again which would otherwise trigger the patch on itself
 
